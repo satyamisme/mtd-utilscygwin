@@ -1,0 +1,114 @@
+name: Build mtd-utils on Cygwin
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on Cygwin
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout mtd-utilscygwin repository
+        uses: actions/checkout@v4
+
+      - name: Cache Cygwin packages
+        id: cache-cygwin
+        uses: actions/cache@v4
+        with:
+          path: C:\cygwin64
+          key: cygwin-${{ runner.os }}-build-mtd
+
+      - name: Setup Cygwin
+        if: steps.cache-cygwin.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          powershell -Command "Invoke-WebRequest -Uri 'https://www.cygwin.com/setup-x86_64.exe' -OutFile 'C:\setup-cygwin.exe'"
+          C:\setup-cygwin.exe --quiet-mode --no-shortcuts --no-startmenu --only-site --site "http://mirrors.kernel.org/sourceware/cygwin/" --packages "gcc-core,make,libzlib-devel,liblzo2-devel,git,autoconf,automake,libtool,gettext-devel,gettext,libiconv-devel" --root "C:\cygwin64" --local-package-dir "C:\cygwin-packages"
+
+      - name: Build mtd-utils with Cygwin
+        shell: cmd
+        run: |
+          C:\cygwin64\bin\bash.exe -l -c "cd \"$(cygpath '${{ github.workspace }}')\" && echo '=== Running autogen.sh ===' && ./autogen.sh && echo '=== Running configure ===' && ./configure && echo '=== Building all tools ===' && make"
+
+      - name: Prepare artifacts directory
+        shell: cmd
+        run: |
+          mkdir artifacts
+          copy mkfs.jffs2\mkfs.jffs2.exe artifacts\ 2>nul || echo "mkfs.jffs2.exe not found"
+          copy mkfs.ubifs\mkfs.ubifs.exe artifacts\ 2>nul || echo "mkfs.ubifs.exe not found"
+          copy ubi-utils\ubinize.exe artifacts\ 2>nul || echo "ubinize.exe not found"
+          copy ubi-utils\ubiformat.exe artifacts\ 2>nul || echo "ubiformat.exe not found"
+          copy ubi-utils\ubinfo.exe artifacts\ 2>nul || echo "ubinfo.exe not found"
+          copy ubi-utils\ubiattach.exe artifacts\ 2>nul || echo "ubiattach.exe not found"
+          copy ubi-utils\ubidetach.exe artifacts\ 2>nul || echo "ubidetach.exe not found"
+          copy ubi-utils\ubimkvol.exe artifacts\ 2>nul || echo "ubimkvol.exe not found"
+          copy ubi-utils\ubirmvol.exe artifacts\ 2>nul || echo "ubirmvol.exe not found"
+          copy ubi-utils\ubiupdatevol.exe artifacts\ 2>nul || echo "ubiupdatevol.exe not found"
+          dir artifacts
+
+      - name: Upload artifact (all tools)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtd-utils-cygwin-tools
+          path: artifacts/
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: mtd-utils-cygwin-tools
+          path: release/
+
+      - name: Create ZIP archive
+        run: |
+          cd release
+          zip -r ../mtd-utils-cygwin-${{ github.ref_name }}.zip .
+          cd ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: mtd-utils Windows Build ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            mtd-utils-cygwin-${{ github.ref_name }}.zip
+          body: |
+            ## mtd-utils Windows Tools
+
+            This release contains **mkfs.jffs2.exe**, **mkfs.ubifs.exe**, **ubinize.exe**, and other MTD utilities built for Windows using Cygwin.
+
+            All tools are compiled from the [satyamisme/mtd-utilscygwin](https://github.com/satyamisme/mtd-utilscygwin) repository.
+
+            ### Included Tools
+
+            - `mkfs.jffs2.exe` – Create JFFS2 filesystem images
+            - `mkfs.ubifs.exe` – Create UBIFS images
+            - `ubinize.exe` – Generate UBI images from UBIFS
+            - `ubiformat.exe` – Format UBI volumes
+            - `ubinfo.exe` – Display UBI information
+            - `ubiattach.exe` / `ubidetach.exe` – Attach/detach UBI devices
+            - `ubimkvol.exe` / `ubirmvol.exe` – Create/remove UBI volumes
+            - `ubiupdatevol.exe` – Update UBI volumes
+
+            ### Usage Example (JFFS2)
+
+            ```cmd
+            mkfs.jffs2.exe -r extracted_system -o system.bin -e 0x20000 -s 0x800 -l --pad
